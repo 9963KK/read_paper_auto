@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+build/
+dist/
+
+# Virtualenv
+venv/
+.venv/
+
+# Local env / secrets
+.env
+.env.*
+!.env.example
+
+# Runtime artifacts
+data/
+*.log
+
+# Local tools / binaries
+cloudflared
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
