@@ -565,7 +565,10 @@ class FeishuBot:
             message += (
                 "\n\n如需记录你的精读感想，可直接回复：\n"
                 "- 感想 这里写你的感想（默认写入最近一篇精读）\n"
-                "- 感想 https://arxiv.org/abs/xxxx.xxxxx 这里写你的感想（指定论文，abs/pdf 均可）"
+                "- 感想 https://arxiv.org/abs/xxxx.xxxxx 这里写你的感想（指定论文，abs/pdf 均可）\n"
+                "\n如需给论文统计页添加评论，可直接回复：\n"
+                "- 评论 这里写你的评论（默认匹配最近一篇论文）\n"
+                "- 评论 https://arxiv.org/abs/xxxx.xxxxx 这里写你的评论（指定论文，abs/pdf 均可）"
             )
 
         await self.send_text_message(receive_id, message, receive_id_type)

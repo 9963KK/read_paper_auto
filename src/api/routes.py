@@ -41,6 +41,10 @@ _THOUGHTS_CMD_RE = re.compile(
     r"^\s*(?:@_user_\d+\s*)*(?:/thoughts?\b|thoughts?\b|感想|心得|想法|思考)(?:[\s:：,，]|$)",
     re.IGNORECASE,
 )
+_COMMENT_CMD_RE = re.compile(
+    r"^\s*(?:@_user_\d+\s*)*(?:/comment\b|comment\b|评论|备注|评语)(?:[\s:：,，]|$)",
+    re.IGNORECASE,
+)
 
 
 def _chat_context_key(sender_open_id: str | None, chat_id: str | None) -> str:
@@ -62,6 +66,29 @@ def _parse_thoughts_command(text: str) -> tuple[str | None, str]:
     raw = re.sub(r"^(?:/thoughts?\b|thoughts?\b|感想|心得|想法|思考)(?:[\s:：,，]*)", "", raw, flags=re.IGNORECASE).strip()
 
     url = feishu_bot.extract_url_from_message(raw) or feishu_bot.extract_url_from_message(text or "")
+    if url:
+        raw = raw.replace(url, "").strip()
+    return url, raw
+
+
+def _parse_comment_command(text: str) -> tuple[str | None, str]:
+    """
+    解析「评论」类消息：
+    - 支持：评论/备注/评语 或 /comment 前缀
+    - 支持：消息内带 arXiv 链接（可选）
+    - 支持：只写 arXiv id（如 2510.04618）
+    """
+    raw = (text or "").strip()
+    raw = re.sub(r"^\s*(?:@_user_\d+\s*)+", "", raw).strip()
+    raw = re.sub(r"^(?:/comment\b|comment\b|评论|备注|评语)(?:[\s:：,，]*)", "", raw, flags=re.IGNORECASE).strip()
+
+    url = feishu_bot.extract_url_from_message(raw) or feishu_bot.extract_url_from_message(text or "")
+    if not url:
+        arxiv_id = PaperParser.extract_arxiv_id(raw)
+        if arxiv_id:
+            url = f"https://arxiv.org/abs/{arxiv_id}"
+            raw = raw.replace(arxiv_id, "").strip()
+
     if url:
         raw = raw.replace(url, "").strip()
     return url, raw
@@ -282,6 +309,199 @@ async def _process_thoughts_message(
 
 def _is_thoughts_message(text: str) -> bool:
     return bool(_THOUGHTS_CMD_RE.match(text or ""))
+
+
+async def _process_comment_message(
+    *,
+    sender_id: str | None,
+    chat_id: str | None,
+    receive_id: str,
+    receive_id_type: str,
+    text: str,
+) -> None:
+    """
+    处理「评论」类消息：写入论文统计页（Craft Collection）的评论字段并回消息。
+    """
+    ctx_key = _chat_context_key(sender_id, chat_id)
+    url_in_msg, comment = _parse_comment_command(text)
+    if not comment:
+        try:
+            await feishu_bot.send_text_message(
+                receive_id,
+                "请发送你的评论内容（会写入论文统计页的评论字段）。\n示例：\n- 评论 这里写你的评论\n- 评论 https://arxiv.org/abs/xxxx.xxxxx 这里写你的评论",
+                receive_id_type=receive_id_type,
+            )
+        except Exception:
+            logger.exception("Failed to send feishu empty-comment hint message")
+        return
+
+    # 立即反馈：让用户知道正在处理
+    try:
+        await feishu_bot.send_text_message(
+            receive_id,
+            "✅ 已收到你的评论！正在优化内容并写入论文统计页...",
+            receive_id_type=receive_id_type,
+        )
+    except Exception:
+        logger.exception("Failed to send feishu comment-ack message")
+
+    candidate_paper_ids: list[str] = []
+    if url_in_msg:
+        candidate_paper_ids = _candidate_paper_ids_from_url(url_in_msg)
+    elif ctx_key:
+        last_paper_id = _chat_last_paper_id.get(ctx_key)
+        if last_paper_id:
+            candidate_paper_ids = [last_paper_id]
+
+    history_error: str | None = None
+    if not candidate_paper_ids:
+        if chat_id:
+            try:
+                items = await feishu_bot.list_chat_messages(chat_id, page_size=20)
+                for item in items:
+                    msg_text = _extract_text_from_feishu_message_item(item)
+                    if not msg_text:
+                        continue
+                    found_url = feishu_bot.extract_url_from_message(msg_text)
+                    if not found_url:
+                        continue
+                    for paper_id in _candidate_paper_ids_from_url(found_url):
+                        config = {"configurable": {"thread_id": paper_id}}
+                        state = await workflow_app.aget_state(config)
+                        if state and state.values:
+                            candidate_paper_ids = [paper_id]
+                            break
+                    if candidate_paper_ids:
+                        break
+            except Exception as e:
+                history_error = str(e)
+                logger.warning(f"Feishu history lookup failed: chat_id={chat_id} err={history_error}")
+
+    if not candidate_paper_ids:
+        extra_hint = ""
+        if history_error and "im:message.group_msg" in history_error:
+            extra_hint = "\n（提示：需要在飞书开放平台为应用开通权限 im:message.group_msg，并重新发布/管理员授权）"
+        try:
+            await feishu_bot.send_text_message(
+                receive_id,
+                "未找到对应论文上下文，请在评论消息里带上论文链接（arXiv 的 abs/pdf 均可）。\n示例：评论 https://arxiv.org/abs/xxxx.xxxxx 这里写你的评论"
+                + extra_hint,
+                receive_id_type=receive_id_type,
+            )
+        except Exception:
+            logger.exception("Failed to send feishu missing-comment-context message")
+        return
+
+    target_paper_id: str | None = None
+    target_values: dict | None = None
+    for paper_id in candidate_paper_ids:
+        config = {"configurable": {"thread_id": paper_id}}
+        state = await workflow_app.aget_state(config)
+        if state and state.values:
+            target_paper_id = paper_id
+            target_values = state.values
+            break
+
+    if not target_paper_id or not target_values:
+        try:
+            await feishu_bot.send_text_message(
+                receive_id,
+                "未找到论文处理记录，请先发送论文链接触发处理。",
+                receive_id_type=receive_id_type,
+            )
+        except Exception:
+            logger.exception("Failed to send feishu missing-state (comment) message")
+        return
+
+    craft_item_id = target_values.get("craft_collection_item_id")
+    if not craft_item_id:
+        try:
+            await feishu_bot.send_text_message(
+                receive_id,
+                "该论文还没有写入论文统计页（请先发送论文链接触发处理，完成 triage 后会自动归档）。\n如需指定论文，请在消息中带上论文链接。",
+                receive_id_type=receive_id_type,
+            )
+        except Exception:
+            logger.exception("Failed to send feishu missing-craft-item message")
+        return
+
+    comment_to_write = (comment or "").strip()
+    if not comment_to_write:
+        try:
+            await feishu_bot.send_text_message(
+                receive_id,
+                "评论内容为空，请重新发送。",
+                receive_id_type=receive_id_type,
+            )
+        except Exception:
+            logger.exception("Failed to send feishu empty-comment message")
+        return
+
+    # 使用 LLM 优化评论内容
+    paper_title = target_values.get("title")
+    try:
+        optimized_comment = await llm_client.optimize_comment(comment_to_write, paper_title)
+        logger.info(f"Comment optimized for paper_id={target_paper_id}: original_len={len(comment_to_write)} optimized_len={len(optimized_comment)}")
+    except Exception as e:
+        logger.warning(f"Failed to optimize comment, using original: {e}")
+        optimized_comment = comment_to_write
+
+    # 为避免并发覆盖，同一篇论文的评论更新串行化
+    async with _paper_locks[target_paper_id]:
+        merged_comment = optimized_comment
+        try:
+            existing_item = await craft_client.get_collection_item(craft_item_id)
+            existing_props = existing_item.get("properties") if isinstance(existing_item, dict) else None
+            existing_value = existing_props.get("_7") if isinstance(existing_props, dict) else None
+            existing_text = str(existing_value).strip() if existing_value is not None else ""
+            if existing_text:
+                merged_comment = existing_text.rstrip() + "\n\n" + comment_to_write
+        except Exception as e:
+            logger.warning(f"Failed to read existing collection comment: item_id={craft_item_id} err={e}")
+
+        try:
+            await craft_client.update_collection_item(
+                item_id=craft_item_id,
+                comment=merged_comment,
+            )
+        except Exception as e:
+            logger.exception(
+                f"Failed to update collection comment: paper_id={target_paper_id} item_id={craft_item_id} err={e}"
+            )
+            try:
+                await feishu_bot.send_text_message(
+                    receive_id,
+                    "写入论文统计页评论失败，请稍后重试。",
+                    receive_id_type=receive_id_type,
+                )
+            except Exception:
+                logger.exception("Failed to send feishu comment-write failure message")
+            return
+
+    if ctx_key:
+        _chat_last_paper_id[ctx_key] = target_paper_id
+
+    try:
+        # 构建反馈消息，显示优化后的评论
+        feedback_msg = f"✅ 已写入论文统计页的评论字段。\nCraft 归档: craft://x-callback-url/open?blockId={craft_item_id}"
+
+        # 如果评论被优化过（内容有变化），显示优化结果
+        if optimized_comment != comment_to_write:
+            feedback_msg += f"\n\n📝 优化后的评论：\n{optimized_comment}"
+
+        await feishu_bot.send_text_message(
+            receive_id,
+            feedback_msg,
+            receive_id_type=receive_id_type,
+        )
+    except Exception:
+        logger.exception("Failed to send feishu comment-written message")
+
+    return
+
+
+def _is_comment_message(text: str) -> bool:
+    return bool(_COMMENT_CMD_RE.match(text or ""))
 
 
 def _extract_feishu_message_id(event_data: dict) -> str | None:
@@ -1046,6 +1266,17 @@ async def feishu_callback_handler(request: Request, background_tasks: Background
             # 感想写入可能超过飞书 3s 超时：放入后台任务，避免回调重试导致重复写入
             background_tasks.add_task(
                 _process_thoughts_message,
+                sender_id=sender_id,
+                chat_id=chat_id,
+                receive_id=receive_id,
+                receive_id_type=receive_id_type,
+                text=text,
+            )
+            return {"message": "ok"}
+
+        if _is_comment_message(text):
+            background_tasks.add_task(
+                _process_comment_message,
                 sender_id=sender_id,
                 chat_id=chat_id,
                 receive_id=receive_id,

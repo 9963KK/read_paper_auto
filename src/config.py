@@ -41,6 +41,10 @@ class Settings(BaseSettings):
     # 日志
     log_level: str = "INFO"
 
+    # 个性化：精读 prompt 风格指南（可选）
+    # 指向一个本地文件路径；文件内容会被拼接到 deep_read 的 system prompt 中
+    deep_read_style_guide_path: Optional[str] = None
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
 

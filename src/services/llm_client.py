@@ -7,6 +7,7 @@ from openai import AsyncOpenAI
 from loguru import logger
 import json
 import re
+from pathlib import Path
 
 from src.config import settings
 
@@ -29,6 +30,22 @@ class LLMClient:
 
         logger.info(f"LLM main model: {self.model}")
         logger.info(f"LLM aside model: {self.aside_model}")
+
+    @staticmethod
+    def _load_text_file(path: str, max_chars: int = 8000) -> str:
+        if not path:
+            return ""
+        try:
+            file_path = Path(path)
+            if not file_path.exists() or not file_path.is_file():
+                return ""
+            text = file_path.read_text(encoding="utf-8").strip()
+            if max_chars > 0 and len(text) > max_chars:
+                return text[: max_chars - 1].rstrip() + "…"
+            return text
+        except Exception as e:
+            logger.warning(f"Failed to load text file: path={path} error={e}")
+            return ""
 
     async def generate_triage(
         self,
@@ -182,6 +199,14 @@ class LLMClient:
   "innovations": "...",
   "directions": "..."
 }"""
+
+        style_guide = self._load_text_file(settings.deep_read_style_guide_path or "")
+        if style_guide:
+            system_prompt += (
+                "\n\n# 用户精读偏好指南（必须遵循）\n"
+                + style_guide
+                + "\n\n请在不改变 JSON 字段结构的前提下，尽可能贴合该偏好指南输出。"
+            )
         
         # 构建用户消息内容
         content = []
@@ -350,6 +375,77 @@ Triage 概要：
 
         return url
 
+    async def optimize_comment(self, raw_comment: str, paper_title: Optional[str] = None) -> str:
+        """
+        使用 ASIDE_LLM 优化用户评论内容。
+
+        Args:
+            raw_comment: 用户原始评论
+            paper_title: 论文标题（可选，用于上下文）
+
+        Returns:
+            优化后的评论内容
+        """
+        system_prompt = """你是"论文评论优化助手"。任务：优化用户对学术论文的评论，使其更专业、清晰、有条理。
+
+规则：
+1) 保持原意：不改变用户的核心观点和评价
+2) 语言优化：
+   - 使用更专业的学术表达
+   - 结构化表述（如有多个要点，用分点列出）
+   - 修正明显的语法错误或口语化表达
+3) 简洁性：控制在原文的 1.5 倍长度以内，避免过度扩展
+4) 保留情感：保持用户的正面/负面倾向
+5) 输出格式：纯文本，不要 markdown 格式标记（如 **、##、- 等）
+
+输出示例：
+输入："这篇文章方法不错但实验不够"
+输出："文章提出的方法具有一定创新性，但实验部分验证不够充分，建议补充更多对比实验。"
+
+输入："创新点很有意思 可以关注一下"
+输出："论文的创新点值得关注，相关思路对后续研究有启发价值。"
+
+禁止输出解释性文字，只输出优化后的评论内容。"""
+
+        context_info = f"论文标题：{paper_title}\n\n" if paper_title else ""
+        user_text = f"{context_info}用户评论：{raw_comment}\n\n请优化上述评论。"
+
+        # 优先用 ASIDE_LLM；若失败则回退到主 LLM
+        try:
+            resp = await self.aside_client.chat.completions.create(
+                model=self.aside_model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_text},
+                ],
+                temperature=0.3,  # 较低温度保证稳定性
+            )
+            optimized = (resp.choices[0].message.content or "").strip()
+            if optimized:
+                logger.info(f"Comment optimized by aside LLM: {len(raw_comment)} -> {len(optimized)} chars")
+                return optimized
+        except Exception as e:
+            logger.warning(f"Aside LLM optimize comment failed, falling back to main LLM: {e}")
+
+        try:
+            resp = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_text},
+                ],
+                temperature=0.3,
+            )
+            optimized = (resp.choices[0].message.content or "").strip()
+            if optimized:
+                logger.info(f"Comment optimized by main LLM: {len(raw_comment)} -> {len(optimized)} chars")
+                return optimized
+        except Exception as e:
+            logger.warning(f"Main LLM optimize comment failed, returning original: {e}")
+
+        # 失败时返回原始评论
+        return raw_comment
+
     async def extract_paper_url(self, user_text: str) -> Optional[str]:
         """
         使用 ASIDE_LLM 从文本中抽取论文链接。
@@ -357,7 +453,7 @@ Triage 概要：
         Returns:
             论文链接；若无法确定则返回 None
         """
-        system_prompt = """你是“论文链接提取器”。任务：从用户输入中提取一个最可能指向论文入口的链接；若无法确定为论文链接则返回统一提示。
+        system_prompt = """你是"论文链接提取器"。任务：从用户输入中提取一个最可能指向论文入口的链接；若无法确定为论文链接则返回统一提示。
 
 规则：
 1) 只从输入里实际出现的内容提取，禁止编造/补全不存在的链接。

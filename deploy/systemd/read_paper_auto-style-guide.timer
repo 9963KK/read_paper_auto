@@ -1,0 +1,11 @@
+[Unit]
+Description=Monthly style-guide refresh for read_paper_auto
+
+[Timer]
+OnCalendar=*-*-01 03:15:00
+Persistent=true
+Unit=read_paper_auto-style-guide.service
+
+[Install]
+WantedBy=timers.target
+

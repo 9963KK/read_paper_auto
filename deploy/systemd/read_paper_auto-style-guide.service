@@ -1,0 +1,12 @@
+[Unit]
+Description=read_paper_auto: build deep-read style guide from Craft samples
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/read_paper_auto
+ExecStart=/root/read_paper_auto/venv/bin/python /root/read_paper_auto/scripts/build_deep_read_style_guide.py --max-docs 20 --use-llm
+StandardOutput=append:/root/read_paper_auto/data/style_guide_systemd.log
+StandardError=append:/root/read_paper_auto/data/style_guide_systemd.log
+

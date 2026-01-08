@@ -18,6 +18,43 @@ class CraftClient:
         self.template_id = settings.craft_reading_template_id
         self.papers_folder_id = settings.craft_papers_folder_id
         self.client = httpx.AsyncClient(timeout=30.0)
+
+    async def list_collection_items(self) -> List[Dict[str, Any]]:
+        """列出 collection 的所有 items。"""
+        url = f"{self.base_url}/collections/{self.collection_id}/items"
+        response = await self.client.get(url)
+        response.raise_for_status()
+        data = response.json()
+        items = data.get("items")
+        return items if isinstance(items, list) else []
+
+    async def list_documents(
+        self,
+        folder_id: Optional[str] = None,
+        fetch_metadata: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """列出 Craft 文档（可按 folderId 过滤）。"""
+        url = f"{self.base_url}/documents"
+        params: Dict[str, Any] = {}
+        if folder_id:
+            params["folderId"] = folder_id
+        if fetch_metadata:
+            params["fetchMetadata"] = "true"
+
+        response = await self.client.get(url, params=params)
+        response.raise_for_status()
+        data = response.json()
+        items = data.get("items")
+        return items if isinstance(items, list) else []
+
+    async def get_block_tree(self, block_id: str, max_depth: int = 3) -> Dict[str, Any]:
+        """获取 block 树（用于读取文档内容）。"""
+        url = f"{self.base_url}/blocks"
+        params: Dict[str, Any] = {"id": block_id, "maxDepth": max_depth}
+        response = await self.client.get(url, params=params)
+        response.raise_for_status()
+        data = response.json()
+        return data if isinstance(data, dict) else {}
     
     async def close(self):
         """关闭客户端"""

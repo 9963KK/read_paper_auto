@@ -10,6 +10,7 @@
 - 📝 **自动归档到 Craft** - 自动创建 Collection 条目和精读文档
 - 💬 **飞书感想回填** - 直接回复「感想 ...」即可写入精读文档的「思考和感想」
 - 🔧 **可配置 LLM** - 支持自定义 base_url、api_key、model
+- 🎯 **精读偏好对齐（可选）** - 从你已有的精读笔记提炼偏好，驱动后续精读 prompt 更贴合你的关注点
 
 ## 项目状态
 
@@ -59,12 +60,41 @@ cp .env.example .env
 - `FEISHU_APP_ID` - 飞书应用 ID
 - `FEISHU_APP_SECRET` - 飞书应用密钥
 
+可选配置项：
+- `DEEP_READ_STYLE_GUIDE_PATH` - 精读 prompt 风格指南文件路径（会拼接到 deep_read system prompt）
+
 ### 3. 运行服务
 
 ```bash
 # 开发模式
 uvicorn src.main:app --reload --host 0.0.0.0 --port 8000
 ```
+
+### （可选）从已有精读笔记提炼偏好并生成风格指南
+
+1) 抽样本（不调用 LLM）：
+
+```bash
+python scripts/build_deep_read_style_guide.py --max-docs 10
+```
+
+2) 生成风格指南（会调用 ASIDE_LLM）：
+
+```bash
+python scripts/build_deep_read_style_guide.py --max-docs 10 --use-llm
+```
+
+把生成的 `./data/deep_read_style_guide.md` 配到 `.env` 的 `DEEP_READ_STYLE_GUIDE_PATH`，重启服务即可生效。
+
+### （可选）定时（每月）自动刷新风格指南
+
+两种方式任选其一：
+
+- **cron（简单）**：把 `deploy/cron.monthly.example` 的内容加入 `crontab -e`
+- **systemd timer（更推荐）**：把 `deploy/systemd/*` 复制到 `/etc/systemd/system/` 后执行：
+  - `systemctl daemon-reload`
+  - `systemctl enable --now read_paper_auto-style-guide.timer`
+  - 查看定时器：`systemctl list-timers | grep style-guide`
 
 ## 架构设计
 

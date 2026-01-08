@@ -1,0 +1,6 @@
+# Run on the 1st day of every month at 03:15
+# - cd into repo so `.env` can be loaded
+# - use venv python to ensure dependencies exist
+# - redirect logs for debugging
+15 3 1 * * cd /root/read_paper_auto && ./venv/bin/python scripts/build_deep_read_style_guide.py --max-docs 20 --use-llm >> ./data/style_guide_cron.log 2>&1
+
