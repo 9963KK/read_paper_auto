@@ -11,6 +11,10 @@ from pathlib import Path
 
 from src.config import settings
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+TRIAGE_SYSTEM_PROMPT_PATH = REPO_ROOT / "prompt_lab" / "prompts" / "triage_system.md"
+DEEP_READ_SYSTEM_PROMPT_PATH = REPO_ROOT / "prompt_lab" / "prompts" / "deep_read_system.md"
+
 
 class LLMClient:
     """LLM 客户端"""
@@ -64,7 +68,7 @@ class LLMClient:
         Returns:
             包含 summary, contributions, limitations, relevance, suggested_action, suggested_tags
         """
-        system_prompt = """你是一个专业的AI研究论文分析助手。请分析论文并提供以下信息：
+        system_prompt = self._load_text_file(str(TRIAGE_SYSTEM_PROMPT_PATH), max_chars=0) or """你是一个专业的AI研究论文分析助手。请分析论文并提供以下信息：
 
 1. 概要（summary）：用2-3句话概括论文的核心内容
 2. 贡献点（contributions）：列出3-5个主要贡献点
@@ -185,7 +189,7 @@ class LLMClient:
         Returns:
             包含 overview, innovations, directions
         """
-        system_prompt = """你是一个专业的AI研究论文精读助手。请深入分析论文并提供：
+        system_prompt = self._load_text_file(str(DEEP_READ_SYSTEM_PROMPT_PATH), max_chars=0) or """你是一个专业的AI研究论文精读助手。请深入分析论文并提供：
 
 1. 文章概述（overview）：详细描述论文的研究背景、问题定义、方法论和主要结果（300-500字）
 2. 创新点（innovations）：深入分析论文的创新之处，包括技术创新、方法创新、应用创新等（200-300字）
