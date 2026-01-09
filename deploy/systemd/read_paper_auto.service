@@ -1,0 +1,24 @@
+[Unit]
+Description=Read Paper Auto - 论文自动归档系统
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/read_paper_auto
+Environment="PATH=/root/read_paper_auto/venv/bin:/usr/local/bin:/usr/bin:/bin"
+ExecStart=/root/read_paper_auto/venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 12312
+Restart=always
+RestartSec=10
+StandardOutput=append:/root/read_paper_auto/logs/service.log
+StandardError=append:/root/read_paper_auto/logs/service.log
+
+# 资源限制
+LimitNOFILE=65536
+
+# 安全配置
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
